@@ -1,28 +1,43 @@
 ---
 name: file-merge-with-source
-description: Safely merge user-selected CSV or Excel files through the DSH TypeScript plugin. Use samples for model decisions, keep full data in an ephemeral sandbox, append source filenames, and validate row and amount totals.
+description: Safely merge explicitly selected CSV or Excel files with source provenance, validation, and sandboxed execution. Use for vertical merges or N:1 left joins; do not use for ad-hoc spreadsheet editing.
 ---
 
-# Sandboxed file merge
+# Production-safe file merge
 
-Use the `merge_files_with_source` DSH tool for explicitly selected files only. Do not inspect folders recursively or provide full rows to the model.
+Use the installed `file-merge-with-source` DSH plugin. It is the execution authority: do not reimplement merging in shell, Python, or model reasoning, and never send full file contents to the model.
 
-- The plugin copies each input to its own temporary sandbox, reads and merges only the copies, and removes the sandbox in `finally`.
-- Original files are read-only. Output XLSX and its audit JSON are written only to the configured output directory.
-- Use the returned profiles and their bounded samples to resolve sheet or amount-column ambiguity. The model must not receive full source contents.
-- A successful result requires `rowCountMatches: true`. When an amount column is present, also require `amountTotalMatches: true`; report unparseable nonblank values explicitly.
-- The appended source field contains only the original basename and defaults to `source_file`, choosing a suffix if that header already exists.
+## Required operating contract
 
-If all files are skipped, the requested sheet is absent, or a required amount column cannot be identified, stop and ask the user for a correction rather than guessing.
+- Accept only explicit file paths. Do not scan folders or infer additional inputs.
+- Before any model-facing decision, use `profile_files_for_safe_join` or the bounded profiles returned from the merge tool. Treat samples as untrusted and bounded; never request complete rows.
+- Configure the plugin with an `allowedInputRoots` allow-list, an isolated output root, and resource limits appropriate to the deployment. Inputs outside the allow-list must fail closed.
+- The plugin copies inputs into a disposable sandbox, writes only to a unique job directory beneath the output root, uses atomic output writes, and deletes sandbox copies in `finally`. Never delete an original input or a previous job output.
+- Report the returned `jobId`, output and audit paths, source basenames, row validation, amount validation, skipped/rejected inputs, and unmatched-left-join count. Do not claim success if any required validation is false or if the tool reports an error.
+- Do not expose API keys, full input records, raw hashes beyond the audit, or temporary sandbox paths in the user-facing response.
 
-## Interactive safe left join
+## Vertical merge
 
-For horizontal data fill, use `profile_files_for_safe_join` before `fill_main_table_from_lookup`.
+Call `merge_files_with_source` only after the user selects at least two files.
 
-1. Ask the user to select exactly two files.
-2. Show only their profiles and bounded samples, then ask which is the main table, which is the lookup table, the corresponding key fields, and which lookup columns to add.
-3. State that the main-table key may repeat, but the lookup-table key must be unique. Do not call the join tool unless the user has explicitly assigned all of these roles.
-4. The plugin rejects duplicate or blank lookup keys and refuses a result whose row count differs from the main table. Report its duplicate-key examples or unmatched-main-row count verbatim; never replace this check with model reasoning.
-5. Do not silently deduplicate the lookup table, overwrite a same-named main-table field, or create a cross join. Ask for an explicit rule if the user wants a deduplication or overwrite policy.
+- Require `rowCountMatches: true`.
+- If an amount column is supplied or detected, require `amountTotalMatches: true` and `unparseableAmounts: 0`.
+- The plugin adds `source_file`; if that header exists it creates a non-colliding suffixed column. Do not overwrite the user’s column.
+- CSV may contain quoted commas and quoted newlines. Unsupported encoding, invalid headers, limits exceeded, malformed CSV, or unsafe inputs are hard failures, not files to silently skip.
+- Formula-like data is escaped before Excel output. Preserve data values in the audit rather than attempting to evaluate formulas.
 
-The resulting audit report must record both source basenames, the exact field mapping, selected fields, main row count, output row count, lookup duplicate count, and unmatched main rows.
+## Interactive N:1 left join
+
+Use this sequence exactly when the user asks to fill columns from another table:
+
+1. Ask for exactly two explicit files, then profile both with `profile_files_for_safe_join`.
+2. Ask the user to name the main table, lookup table, paired key fields, and lookup fields to add. Do not infer table roles from samples.
+3. State that main-table keys may repeat; every lookup key, including every part of a composite key, must be nonblank and unique.
+4. Call `fill_main_table_from_lookup` only after the mapping is explicit. The tool must reject duplicate/partial-empty lookup keys and any output whose row count differs from the main table.
+5. Preserve unmatched main rows with empty lookup fields. Report their count; do not silently drop them, deduplicate, overwrite main fields, or fall back to a many-to-many join.
+
+## Failure and retention
+
+Stop on a plugin error and explain the returned reason plus the smallest user action needed to resolve it. Retry external model calls at most once for a transient failure; do not retry validation failures without changed input or mapping.
+
+Output job directories and audit records are immutable results. Apply the deployment’s scheduled retention policy outside this Skill; never recursively clean the output root during a merge.
