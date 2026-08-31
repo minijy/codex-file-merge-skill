@@ -40,4 +40,4 @@ Use this sequence exactly when the user asks to fill columns from another table:
 
 Stop on a plugin error and explain the returned reason plus the smallest user action needed to resolve it. Retry external model calls at most once for a transient failure; do not retry validation failures without changed input or mapping.
 
-Output job directories and audit records are immutable results. Apply the deployment’s scheduled retention policy outside this Skill; never recursively clean the output root during a merge.
+Output job directories and audit records are immutable results. Set the plugin's `outputRetentionMs` for automatic expiry; it may delete only expired UUID job directories immediately below the output root. Never recursively clean the output root during a merge.
